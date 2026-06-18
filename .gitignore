@@ -2,6 +2,8 @@
 *.zip
 *.png
 *.csv
+*.npz
+*.pkl
 
 # Python
 __pycache__/
