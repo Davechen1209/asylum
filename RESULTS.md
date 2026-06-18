@@ -155,19 +155,76 @@ almeno fornisce un gradiente denso e fa coprire l'agente.)
 
 ---
 
+# Esperimento 4 — Hedging multi-strumento (Delta/Gamma/Vega)
+
+Script: `multi_hedge_env.py`, `multi_hedge_experiment.py`, `multi_hedge_lowlambda.py`.
+Scenario scelto perche' "favorevole all'RL": coprire una passivita' con
+esposizione Delta/Gamma/Vega usando il sottostante (solo Delta, economico) + una
+opzione di hedging OTM (Gamma/Vega, cara: spread 2% sul premio), sotto vol
+stocastica Heston. Qui NON esiste una soluzione classica in forma chiusa
+cost-aware -> l'RL dovrebbe poter aggiungere valore.
+
+## Avversario classico forte
+
+La calibrazione su validation mostra che il **Delta-Gamma hedge pieno** (ribilancia
+l'opzione ad ogni passo) e' subottimo, e che una **gamma-band** (ribilancia
+l'opzione solo se il Gamma residuo supera una soglia) lo domina su tutto:
+
+| Strategia | P&L medio | Std | CVaR-5% | Costi |
+|-----------|----------:|----:|--------:|------:|
+| **GBand(3) ottima** 🏆 | -44.5 | **36.6** | **-131.1** | **22.8** |
+| Delta-Gamma (full) | -69.6 | 41.0 | -165.0 | 41.0 |
+| Delta (solo stock) | -7.9 | 76.0 | -182.3 | 28.5 |
+
+## Risultato DRL (test, 500 scenari mai visti)
+
+| Config DRL | Std | CVaR-5% | Costi |
+|-----------|----:|--------:|------:|
+| SAC-mv λ=0.02 (migliore) | 131.2 | -418.3 | 96.2 |
+| SAC-mv λ=0.1 | 134.2 | -371.9 | 101.9 |
+| PPO-mv λ=0.005 | 246.2 | -679.3 | 122.4 |
+| PPO-mv λ=0.02 / 0.05 / 0.1 / 0.3 | 350-500 | da -1200 a -1700 | **505-695** |
+
+**Nessuna config DRL si avvicina alla gamma-band** (std 37, costi 23). Il miglior
+DRL (SAC) ha rischio ~3.5x e costi ~4x la band, e perde anche contro il
+Delta-Gamma pieno.
+
+## Diagnosi
+
+- **PPO iper-trada** l'opzione cara (costi 500-700, ~25x la band) ed e' instabile/
+  non-monotono in lambda: la reward mean-variance per-passo lo spinge ad azzerare
+  il P&L per-passo "a qualunque costo", e l'azione 2D con strumento costoso crea un
+  problema di stabilita' che PPO non risolve in nessun punto del lambda sweep
+  (0.005 -> 0.3).
+- **SAC** e' piu' stabile ma converge a una politica mediocre: copre, ma paga
+  troppo e non eguaglia l'efficienza della band.
+- La gamma-band incorpora un prior strutturale fortissimo (trada lo strumento caro
+  solo fuori soglia; usa sempre il sottostante economico per il Delta) gia' quasi
+  ottimo, che l'RL model-free non scopre con reward/budget standard.
+
+---
+
 # Conclusione complessiva
 
-Su **tre** esperimenti e molteplici reward (DSR, mean-variance per-passo,
-Deep Hedging terminale) con PPO e SAC, **nessuna variante RL ha battuto i metodi
-classici ben tarati su base risk-adjusted**:
+Su **quattro** esperimenti, molteplici reward (DSR, mean-variance per-passo,
+Deep Hedging terminale), entrambi PPO e SAC, e sia hedging a singolo strumento
+sia multi-strumento, **nessuna variante RL ha battuto i metodi classici ben
+tarati su base risk-adjusted**:
 
-- Caso base: il Delta di Black-Scholes resta imbattuto.
-- Alti costi: la **no-trade band** ottimizzata resta il vincitore netto
-  (miglior Sharpe e CVaR, minor tail-risk).
+- Caso base (solo Delta): il **Delta di Black-Scholes** resta imbattuto.
+- Alti costi (solo Delta): la **no-trade band** ottimizzata vince.
+- Multi-strumento (Delta/Gamma/Vega): la **gamma-band** ottimizzata vince; l'RL
+  non batte nemmeno il Delta-Gamma pieno.
 
-L'RL **impara a coprirsi** e batte le baseline ingenue, ma non i metodi classici
-appropriati. Per un eventuale superamento servirebbero: una reward terminale con
-riduzione della varianza del gradiente (es. utilita' entropica ben scalata o RL
-distribuzionale per CVaR), e un budget di training/tuning molto maggiore — senza
-garanzia di successo su questo problema (hedging Delta lineare), dove la
-soluzione classica e' gia' quasi ottima.
+Il motivo e' **strutturale**: questi problemi di hedging hanno soluzioni classiche
+con il giusto prior induttivo (delta neutralita', band a soglia) gia' quasi
+ottime; l'RL model-free fatica a eguagliarle e tende a iper-tradare gli strumenti
+costosi. L'RL **impara a coprirsi** e batte le baseline ingenue, ma non i metodi
+classici appropriati.
+
+**Quando l'RL potrebbe vincere davvero** (non testato qui, ROI incerto): warm-start
+per imitazione dalla band, reward che targetizza direttamente l'obiettivo
+terminale con riduzione di varianza del gradiente (utilita' entropica ben scalata,
+RL distribuzionale per CVaR), politiche ricorrenti, e budget di training/tuning
+molto maggiore. Su questi problemi, pero', la soluzione classica e' un benchmark
+molto duro e onesto da battere.
