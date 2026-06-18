@@ -1,0 +1,22 @@
+# Artefatti generati a runtime
+*.zip
+*.png
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Log e tensorboard
+logs/
+tensorboard/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

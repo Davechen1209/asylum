@@ -1,0 +1,7 @@
+# Dipendenze del sistema DRL di hedging di opzioni
+numpy>=1.24
+scipy>=1.10
+gymnasium>=0.29
+stable-baselines3>=2.0
+torch>=2.0
+matplotlib>=3.7
