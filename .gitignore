@@ -5,6 +5,10 @@
 *.npz
 *.pkl
 
+# Eccezione: i dati di mercato in cache vanno versionati (riproducibilita')
+!data/
+!data/*.csv
+
 # Python
 __pycache__/
 *.py[cod]
