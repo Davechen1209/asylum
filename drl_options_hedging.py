@@ -345,8 +345,11 @@ class EnvConfig:
     dsr_alpha: float = 0.05        # fattore di decadimento del DSR
     random_strike: bool = True     # se True randomizza lievemente strike e maturita'
     # --- Reward ---
-    reward_mode: str = "dsr"       # "dsr" (spec) oppure "meanvar" (P&L con penalita' rischio)
-    risk_lambda: float = 0.02      # peso della penalita' di varianza nel reward "meanvar"
+    # "dsr" | "meanvar" | "terminal_mv" (Deep Hedging, media-varianza terminale) | "entropic"
+    reward_mode: str = "dsr"
+    risk_lambda: float = 0.02      # peso della penalita' di varianza ("meanvar"/"terminal_mv")
+    risk_aversion: float = 1.0     # coefficiente di avversione al rischio ("entropic")
+    wealth_scale: float = 100.0    # scala del P&L terminale ("entropic"), stabilita' numerica
     # --- Separazione dei dati (anti data-leakage) ---
     # Bande di seed disgiunte per train/val/test: nessuna traiettoria condivisa.
     data_split: Optional[str] = None  # None -> casuale; "train"/"val"/"test" -> deterministico
@@ -478,16 +481,42 @@ class OptionsTradingEnv(gym.Env):
         """Imposta il contatore di episodi (per valutazioni deterministiche e ripetibili)."""
         self._ep_idx = idx
 
-    def _compute_reward(self, pnl: float) -> float:
+    def _compute_reward(self, pnl: float, w_prev: float = 0.0, terminated: bool = False) -> float:
         """
         Calcola il reward secondo la modalita' configurata:
-            'dsr'     -> Differential Sharpe Ratio (specifica originale);
-            'meanvar' -> P&L penalizzato per la varianza (R = pnl - lambda * pnl^2),
-                         segnale piu' forte verso politiche a bassa volatilita'.
-        In entrambi i casi il P&L grezzo resta in info['pnl'] per metriche imparziali.
+
+            'dsr'         -> Differential Sharpe Ratio (specifica originale).
+
+            'meanvar'     -> P&L penalizzato per la varianza PER-PASSO
+                             (R = pnl - lambda*pnl^2). Spinge al tracking stretto
+                             del Delta -> alto turnover (in conflitto coi costi).
+
+            'terminal_mv' -> Media-varianza sul P&L TERMINALE, in forma DENSA via
+                             telescoping. Poiche' W_T^2 = sum_t (2*W_{t-1}*pnl_t + pnl_t^2),
+                             la reward densa
+                                 R_t = pnl_t - lambda*(2*W_{t-1}*pnl_t + pnl_t^2)
+                             ha somma  W_T - lambda*W_T^2, ovvero in attesa
+                                 E[W_T] - lambda*E[W_T^2] (~ media-varianza terminale).
+                             Permette al Delta di "driftare" -> fa emergere la
+                             no-trade band (approccio stile Deep Hedging).
+
+            'entropic'    -> Utilita' esponenziale sul P&L terminale (sparsa):
+                             R_T = -exp(-a * W_T / scale), R_{t<T} = 0.
+
+        Il P&L grezzo resta sempre in info['pnl'] per metriche imparziali.
         """
-        if self.reward_mode == "meanvar":
+        mode = self.reward_mode
+        if mode == "meanvar":
             return float(pnl - self.cfg.risk_lambda * (pnl ** 2))
+        if mode == "terminal_mv":
+            lam = self.cfg.risk_lambda
+            return float(pnl - lam * (2.0 * w_prev * pnl + pnl ** 2))
+        if mode == "entropic":
+            if not terminated:
+                return 0.0
+            w = self.wealth / self.cfg.wealth_scale
+            expo = float(np.clip(-self.cfg.risk_aversion * w, -10.0, 10.0))
+            return float(-np.exp(expo))
         return self.dsr.step(pnl)  # default: DSR
 
     # ------------------------------------------------------------------ gym API
@@ -558,13 +587,17 @@ class OptionsTradingEnv(gym.Env):
         pnl_hedge = self.hedge * (S_next - S_now)
         pnl = pnl_options + pnl_hedge - cost
 
+        w_prev = self.wealth                 # ricchezza cumulata PRIMA di questo passo
         self.wealth += pnl
         self._prev_option_value = option_value_next
-        reward = self._compute_reward(pnl)  # DSR oppure mean-variance (vedi config)
 
-        # --- 4) Terminazione e nuova osservazione ---
+        # --- 4) Terminazione ---
         terminated = self.t >= self.n_steps  # raggiunta la scadenza dell'opzione
         truncated = False
+
+        # Reward (DSR / mean-variance per-passo / media-varianza TERMINALE / entropica).
+        reward = self._compute_reward(pnl, w_prev=w_prev, terminated=terminated)
+
         obs = self._get_obs(greeks_next)
 
         port_delta, port_gamma = self._portfolio_greeks(greeks_next)
