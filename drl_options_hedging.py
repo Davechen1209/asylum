@@ -344,6 +344,13 @@ class EnvConfig:
     slippage_rate: float = 5e-4    # slippage proporzionale (5 bps sul nozionale)
     dsr_alpha: float = 0.05        # fattore di decadimento del DSR
     random_strike: bool = True     # se True randomizza lievemente strike e maturita'
+    # --- Reward ---
+    reward_mode: str = "dsr"       # "dsr" (spec) oppure "meanvar" (P&L con penalita' rischio)
+    risk_lambda: float = 0.02      # peso della penalita' di varianza nel reward "meanvar"
+    # --- Separazione dei dati (anti data-leakage) ---
+    # Bande di seed disgiunte per train/val/test: nessuna traiettoria condivisa.
+    data_split: Optional[str] = None  # None -> casuale; "train"/"val"/"test" -> deterministico
+    split_offset: int = 0             # offset per dare path distinti a env paralleli sullo stesso split
 
 
 class OptionsTradingEnv(gym.Env):
@@ -381,10 +388,18 @@ class OptionsTradingEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
+    # Basi di seed DISGIUNTE per i tre split: garantiscono che le traiettorie di
+    # mercato viste in training non compaiano MAI in validation o test.
+    SPLIT_BASE = {"train": 0, "val": 1_000_000_000, "test": 2_000_000_000}
+
     def __init__(self, config: Optional[EnvConfig] = None):
         super().__init__()
         self.cfg = config if config is not None else EnvConfig()
         self.market = self.cfg.market
+
+        # Contatore di episodi: in modalita' split rende le traiettorie deterministiche
+        # e riproducibili (path = f(split, indice episodio)).
+        self._ep_idx = 0
 
         # Numero di passi per episodio = giorni alla scadenza.
         self.n_steps = int(self.cfg.maturity_days)
@@ -401,6 +416,7 @@ class OptionsTradingEnv(gym.Env):
 
         # Calcolatore del reward (DSR).
         self.dsr = DifferentialSharpeRatio(alpha=self.cfg.dsr_alpha)
+        self.reward_mode = self.cfg.reward_mode
 
         # Stato interno (popolato in reset()).
         self.prices: np.ndarray = np.array([])
@@ -458,19 +474,44 @@ class OptionsTradingEnv(gym.Env):
         notional = abs(trade) * S
         return (self.cfg.commission_rate + self.cfg.slippage_rate) * notional
 
+    def set_episode_index(self, idx: int) -> None:
+        """Imposta il contatore di episodi (per valutazioni deterministiche e ripetibili)."""
+        self._ep_idx = idx
+
+    def _compute_reward(self, pnl: float) -> float:
+        """
+        Calcola il reward secondo la modalita' configurata:
+            'dsr'     -> Differential Sharpe Ratio (specifica originale);
+            'meanvar' -> P&L penalizzato per la varianza (R = pnl - lambda * pnl^2),
+                         segnale piu' forte verso politiche a bassa volatilita'.
+        In entrambi i casi il P&L grezzo resta in info['pnl'] per metriche imparziali.
+        """
+        if self.reward_mode == "meanvar":
+            return float(pnl - self.cfg.risk_lambda * (pnl ** 2))
+        return self.dsr.step(pnl)  # default: DSR
+
     # ------------------------------------------------------------------ gym API
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         """Reinizializza l'ambiente: nuova traiettoria di mercato e stato pulito."""
         super().reset(seed=seed)  # inizializza self.np_random
 
-        # Genera una nuova traiettoria di mercato (prezzo + volatilita').
-        rng = np.random.default_rng(self.np_random.integers(0, 2 ** 31 - 1))
+        # --- Selezione della traiettoria di mercato ---
+        # In modalita' split il path e' deterministico e legato a (split, indice):
+        # bande di seed disgiunte => nessun data leakage tra train/val/test.
+        if self.cfg.data_split is not None:
+            base = self.SPLIT_BASE[self.cfg.data_split]
+            heston_seed = base + self.cfg.split_offset + self._ep_idx
+            self._ep_idx += 1
+            rng = np.random.default_rng(heston_seed)
+        else:
+            rng = np.random.default_rng(self.np_random.integers(0, 2 ** 31 - 1))
+
         self.prices, self.vols = simulate_heston(self.market, self.n_steps, rng)
 
-        # Strike e maturita': eventualmente randomizzati per varieta' di scenari.
+        # Strike: eventualmente randomizzato (dallo STESSO rng -> riproducibile per scenario).
         base_strike = self.market.S0 * self.cfg.moneyness
         if self.cfg.random_strike:
-            base_strike *= float(self.np_random.uniform(0.95, 1.05))
+            base_strike *= float(rng.uniform(0.95, 1.05))
         self.K = base_strike
         self.option_qty = self.cfg.option_qty
 
@@ -519,7 +560,7 @@ class OptionsTradingEnv(gym.Env):
 
         self.wealth += pnl
         self._prev_option_value = option_value_next
-        reward = self.dsr.step(pnl)  # Differential Sharpe Ratio del P&L
+        reward = self._compute_reward(pnl)  # DSR oppure mean-variance (vedi config)
 
         # --- 4) Terminazione e nuova osservazione ---
         terminated = self.t >= self.n_steps  # raggiunta la scadenza dell'opzione
