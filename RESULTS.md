@@ -68,3 +68,41 @@ Modello selezionato (min std su validation): **SAC-meanvar**.
 
 > Nota metodologica: i risultati sono riportati senza selezione a posteriori
 > sul test. Tutte le decisioni di modello sono state prese sul validation set.
+
+---
+
+# Esperimento 2 — Cost-aware: l'RL puo' battere il Delta-Hedge?
+
+Script: `cost_aware_experiment.py`. Regime ad **alti costi (50 bps)**, dove il
+delta-hedging continuo e' subottimo e la strategia ottima e' una **no-trade
+band**. Avversario forte: delta-hedge a band ottimizzata su validation (CVaR-5%).
+
+## Test finale (alti costi, 500 scenari mai visti)
+
+| Strategia | P&L medio | Std | Sharpe | CVaR-5% | Worst | Costi |
+|-----------|----------:|----:|-------:|--------:|------:|------:|
+| **Band(15) ottima** 🏆 | **-58.43** | 107.30 | -0.545 | **-297.01** | -417.85 | **75.73** |
+| SAC-meanvar (DRL) | -113.41 | 101.34 | -1.119 | -349.71 | -484.98 | 132.62 |
+| Delta-Hedge (full) | -122.05 | 90.52 | -1.348 | -325.69 | -403.70 | 142.64 |
+| No-Hedge | -17.78 | 564.82 | -0.031 | -1511.56 | -2649.09 | 0.00 |
+
+## Conclusioni
+
+1. **L'RL batte il delta-hedge ingenuo** (P&L -113 vs -122, costi 133 vs 143):
+   marginale ma reale.
+2. **L'RL perde nettamente contro la no-trade band classica** (-113 vs -58):
+   la band taglia i costi (76 vs 133) ribilanciando meno, a parita' di rischio.
+   L'agente NON ha scoperto la struttura a banda (turnover quasi da hedge pieno).
+3. **Causa diagnosticata:** la reward mean-variance (`pnl - λ·pnl²`) penalizza
+   la varianza del P&L *per-passo*, spingendo verso un tracking stretto del Delta
+   (alto turnover). Questa reward **e' in conflitto** con l'obiettivo di
+   risparmiare costi. La band vince perche' ottimizza direttamente il trade-off
+   costo/rischio con un singolo parametro interpretabile.
+
+## Lezione
+
+Anche in uno scenario costruito a favore dell'RL, un metodo classico semplice e
+ben tarato vince. Per battere davvero la band serve **ridisegnare la reward**
+sull'obiettivo economico corretto (media-varianza del P&L **terminale**, stile
+*Deep Hedging* di Buehler et al.) anziche' sulla varianza per-passo, e/o un
+budget di training/tuning molto maggiore.
