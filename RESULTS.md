@@ -106,3 +106,68 @@ ben tarato vince. Per battere davvero la band serve **ridisegnare la reward**
 sull'obiettivo economico corretto (media-varianza del P&L **terminale**, stile
 *Deep Hedging* di Buehler et al.) anziche' sulla varianza per-passo, e/o un
 budget di training/tuning molto maggiore.
+
+---
+
+# Esperimento 3 — Deep Hedging (reward su P&L terminale)
+
+Script: `deep_hedging_experiment.py` + `dh_highlambda.py`. Seguendo la lezione
+dell'esp. 2, si e' implementata la reward Deep Hedging sull'obiettivo TERMINALE
+(`reward_mode='terminal_mv'`, forma densa via telescoping; vedi
+`drl_options_hedging._compute_reward`). Obiettivo: far emergere la no-trade band.
+
+## Test finale (alti costi, 500 scenari mai visti)
+
+| Strategia | P&L medio | Std | Sharpe | CVaR-5% | Costi |
+|-----------|----------:|----:|-------:|--------:|------:|
+| **Band(15) ottima** 🏆 | -58.43 | **107.30** | **-0.545** | **-297.01** | 75.73 |
+| Delta-Hedge (full) | -122.05 | 90.52 | -1.348 | -325.69 | 142.64 |
+| PPO-terminal_mv (DRL) | +14.97 | 570.84 | 0.026 | -1687.93 | 50.48 |
+| No-Hedge | -17.78 | 564.82 | -0.031 | -1511.56 | 0.00 |
+
+## Esito: la reward terminal_mv e' degenere
+
+Sweep di lambda su **due ordini di grandezza** (0.002 -> 0.5): output PRATICAMENTE
+IDENTICO (mean ~35, std ~565, costi ~50 su validation). L'agente **ignora del
+tutto il termine di varianza** e collassa sempre su una politica **quasi-no-hedge**.
+
+| lambda | P&L medio (val) | Std | Costi |
+|-------:|---------------:|----:|------:|
+| 0.002 | 35.9 | 565.7 | 50.0 |
+| 0.01  | 34.1 | 565.1 | 51.3 |
+| 0.05  | 35.8 | 565.5 | 50.1 |
+| 0.20  | 34.7 | 565.0 | 50.8 |
+| 0.50  | 35.0 | 564.9 | 50.8 |
+
+**ATTENZIONE al "MEGLIO" ingannevole:** il DRL ha P&L medio (+15) superiore alla
+band (-58), ma SOLO perche' ha smesso di coprirsi (in questo mercato con drift il
+No-Hedge ha la media migliore). Il suo profilo di rischio e' quello del No-Hedge:
+Std e CVaR ~5x PEGGIORI della band. Non e' hedging, e' speculazione. Su base
+risk-adjusted (l'obiettivo vero) **fallisce completamente**.
+
+## Causa diagnosticata
+
+Il termine telescoping di varianza `2*W_{t-1}*pnl_t` e' path-dependent e ad alta
+varianza: vincola solo la SOMMA terminale e non offre quasi nessun segnale di
+gradiente per-passo. PPO non riesce a ottimizzarlo e ripiega sul solo termine di
+media -> politica no-hedge. (La reward `meanvar` per-passo, pur subottimale,
+almeno fornisce un gradiente denso e fa coprire l'agente.)
+
+---
+
+# Conclusione complessiva
+
+Su **tre** esperimenti e molteplici reward (DSR, mean-variance per-passo,
+Deep Hedging terminale) con PPO e SAC, **nessuna variante RL ha battuto i metodi
+classici ben tarati su base risk-adjusted**:
+
+- Caso base: il Delta di Black-Scholes resta imbattuto.
+- Alti costi: la **no-trade band** ottimizzata resta il vincitore netto
+  (miglior Sharpe e CVaR, minor tail-risk).
+
+L'RL **impara a coprirsi** e batte le baseline ingenue, ma non i metodi classici
+appropriati. Per un eventuale superamento servirebbero: una reward terminale con
+riduzione della varianza del gradiente (es. utilita' entropica ben scalata o RL
+distribuzionale per CVaR), e un budget di training/tuning molto maggiore — senza
+garanzia di successo su questo problema (hedging Delta lineare), dove la
+soluzione classica e' gia' quasi ottima.
