@@ -56,6 +56,35 @@ def load_yahoo(symbol: str, start: str = "2010-01-01", end: Optional[str] = None
     return df
 
 
+def load_stooq(symbol: str, cache_dir: str = "data") -> pd.DataFrame:
+    """
+    Scarica prezzi giornalieri da Stooq (CSV, gratis, senza chiave).
+    Richiede 'stooq.com' nell'allowlist (un solo host). Simboli: azioni US come
+    'spy.us', 'aapl.us'; indici come '^spx'. Cache su disco.
+    """
+    import requests
+    os.makedirs(cache_dir, exist_ok=True)
+    s = symbol.lower()
+    if not s.startswith("^") and "." not in s:
+        s = f"{s}.us"
+    cache = os.path.join(cache_dir, f"{s.replace('^','_').replace('.','_')}_stooq.csv")
+    if os.path.exists(cache):
+        df = pd.read_csv(cache, parse_dates=["date"]).set_index("date")
+        return df
+    url = f"https://stooq.com/q/d/l/?s={s}&i=d"
+    txt = requests.get(url, timeout=20).text
+    from io import StringIO
+    raw = pd.read_csv(StringIO(txt))
+    if "Date" not in raw.columns or raw.empty:
+        raise RuntimeError(f"Stooq: risposta inattesa per {symbol} ({txt[:80]!r})")
+    raw.columns = [c.lower() for c in raw.columns]
+    df = raw.rename(columns={"date": "date"}).set_index(pd.to_datetime(raw["date"]))
+    df = df[["open", "high", "low", "close", "volume"]]
+    df.index.name = "date"
+    df.to_csv(cache)
+    return df
+
+
 def load_csv(path: str) -> pd.DataFrame:
     """Carica un CSV OHLCV dell'utente. Richiede almeno colonne 'date' e 'close'."""
     df = pd.read_csv(path)

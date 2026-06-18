@@ -31,7 +31,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from trading_lib import (
-    load_yahoo, load_csv, simulate_prices,
+    load_yahoo, load_stooq, load_csv, simulate_prices,
     strat_buy_and_hold, strat_sma_crossover, strat_tsmom, strat_mean_reversion,
     run_backtest, metrics, print_metrics_table, ANN,
 )
@@ -48,12 +48,14 @@ def get_data(argv: List[str]) -> tuple[pd.DataFrame, str, bool]:
         path = argv[argv.index("--csv") + 1]
         return load_csv(path), f"CSV:{path}", True
     symbol = next((a for a in argv[1:] if not a.startswith("--")), "SPY")
-    try:
-        px = load_yahoo(symbol)
-        if len(px) > 300:
-            return px, symbol, True
-    except Exception as e:
-        print(f"[avviso] dati reali non disponibili ({type(e).__name__}: {e}).")
+    for loader, src in ((load_yahoo, "Yahoo"), (load_stooq, "Stooq")):
+        try:
+            px = loader(symbol)
+            if len(px) > 300:
+                print(f"[dati] fonte: {src}")
+                return px, symbol, True
+        except Exception as e:
+            print(f"[avviso] {src} non disponibile ({type(e).__name__}: {str(e)[:80]}).")
     print("[avviso] >>> USO DATI SINTETICI: risultati NON significativi (collaudo). <<<")
     return simulate_prices(n_days=3500, seed=7), "SINTETICO", False
 
